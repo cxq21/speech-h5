@@ -23,17 +23,20 @@ function credentials() {
   return appId && apiKey && apiSecret ? { appId, apiKey, apiSecret } : null;
 }
 
+// 安全解析请求路径：扫描器会发 "//"、"//evil" 之类的路径，new URL(path, base) 会抛错或把它当成主机名
+function parseUrl(u) { try { return new URL('http://x' + (String(u || '/').startsWith('/') ? u : '/' + u)); } catch { return new URL('http://x/'); } }
+
 // ---------- 静态文件 ----------
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
+  const url = parseUrl(req.url);
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, configured: !!credentials(), active, upstreamSessions }));
   }
-  let p = decodeURIComponent(url.pathname);
+  let p; try { p = decodeURIComponent(url.pathname); } catch { res.writeHead(400); return res.end(); }
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
   if (!file.startsWith(PUBLIC_DIR)) { res.writeHead(403); return res.end(); }
@@ -44,12 +47,15 @@ const server = http.createServer((req, res) => {
   });
 });
 
+// 兜底：单个请求/连接的异常只记日志，不让进程退出（Render 上进程崩溃会整站 502）
+process.on('uncaughtException', (e) => console.error('[uncaught]', e && e.message));
+
 // ---------- WebSocket 中转 ----------
 let active = 0, upstreamSessions = 0; // upstreamSessions：自启动以来开过的讯飞会话数（= 消耗的调用次数）
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
 
 server.on('upgrade', (req, socket, head) => {
-  const { pathname } = new URL(req.url, 'http://x');
+  const { pathname } = parseUrl(req.url);
   if (pathname !== '/asr') return socket.destroy();
   if (ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); return socket.destroy();
