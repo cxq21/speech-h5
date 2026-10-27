@@ -2,12 +2,48 @@
   const $ = (id) => document.getElementById(id);
   const startBtn = $('start'), stopBtn = $('stop'), clearBtn = $('clear');
   const finalsEl = $('finals'), partialEl = $('partial'), errorEl = $('error'), metaEl = $('meta'), ph = $('ph');
+  const optDenoise = $('optDenoise'), optNear = $('optNear'), sens = $('sens');
+  const meterBar = $('meterBar'), meterThr = $('meterThr'), gateText = $('gateText');
 
-  let ws = null, ctx = null, stream = null, node = null, source = null;
-  let tStart = 0, firstResultAt = 0;
+  let ws = null, ctx = null, stream = null, node = null, source = null, mute = null;
+  let tStart = 0, firstResultAt = 0, wasmBytes = null;
+
+  // 设置：本地保存
+  const saved = JSON.parse(localStorage.getItem('asr-settings') || '{}');
+  if ('denoise' in saved) optDenoise.checked = saved.denoise;
+  if ('nearOnly' in saved) optNear.checked = saved.nearOnly;
+  if ('sensitivity' in saved) sens.value = saved.sensitivity;
+  $('sensVal').textContent = sens.value;
+  const settings = () => ({ denoise: optDenoise.checked, nearOnly: optNear.checked, sensitivity: Number(sens.value) });
+  function onSettings() {
+    $('sensVal').textContent = sens.value;
+    localStorage.setItem('asr-settings', JSON.stringify(settings()));
+    if (node) node.port.postMessage({ type: 'set', ...settings() }); // 录音中实时生效
+    if (stream) { // 浏览器自带处理：开了 RNNoise 就关掉系统降噪（避免叠加失真）；近讲模式关掉自动增益（保留远近音量差）
+      const t = stream.getAudioTracks()[0];
+      t && t.applyConstraints && t.applyConstraints(constraints()).catch(() => {});
+    }
+  }
+  [optDenoise, optNear].forEach((el) => (el.onchange = onSettings)); sens.oninput = onSettings;
+  const constraints = () => ({ channelCount: 1, echoCancellation: true, noiseSuppression: !optDenoise.checked, autoGainControl: !optNear.checked });
 
   function setStatus(text, cls) { $('statusText').textContent = text; $('dot').className = cls || ''; }
   function showError(msg) { errorEl.textContent = msg || ''; if (msg) setStatus('出错', 'err'); }
+  // dBFS(-70..0) → 百分比
+  const pct = (db) => Math.max(0, Math.min(100, (db + 70) / 70 * 100));
+  function meter(m) {
+    window.__meter = m; // 调试/自测用
+    meterBar.style.width = pct(m.level) + '%';
+    meterBar.className = m.open ? 'on' : '';
+    if (m.thr !== null && !m.calibrating) { meterThr.style.display = 'block'; meterThr.style.left = pct(m.thr) + '%'; } else meterThr.style.display = 'none';
+    gateText.textContent = m.calibrating ? '校准环境中…（约 1 秒，可以直接开始说话）' : m.thr === null ? '收音中（未开启近讲过滤）' : m.open ? '● 正在收音（主讲人）' : '○ 已忽略（声音太远/太小或非人声）';
+  }
+
+  async function loadWasm() {
+    if (wasmBytes) return wasmBytes.slice(0);
+    try { const r = await fetch('vendor/rnnoise.wasm'); if (r.ok) wasmBytes = await r.arrayBuffer(); } catch {}
+    return wasmBytes ? wasmBytes.slice(0) : null;
+  }
 
   async function start() {
     showError('');
@@ -15,15 +51,19 @@
     if (!navigator.mediaDevices || !window.AudioWorkletNode) return showError('当前浏览器不支持录音（需要 getUserMedia + AudioWorklet）。');
     startBtn.disabled = true; setStatus('请求麦克风…', 'busy');
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      stream = await navigator.mediaDevices.getUserMedia({ audio: constraints() });
     } catch (e) { startBtn.disabled = false; return showError('无法使用麦克风：' + (e.name === 'NotAllowedError' ? '权限被拒绝' : e.message)); }
 
-    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try { ctx = new AC({ sampleRate: 48000 }); } catch { ctx = new AC(); } // RNNoise 需要 48kHz
     await ctx.resume(); // iOS 需要在用户手势里 resume
-    await ctx.audioWorklet.addModule('pcm-worklet.js');
-    source = ctx.createMediaStreamSource(stream);
-    node = new AudioWorkletNode(ctx, 'pcm-capture');
-    const mute = ctx.createGain(); mute.gain.value = 0; // 让图保持运行但不外放
+    try {
+      const wasm = await loadWasm();
+      await ctx.audioWorklet.addModule('pcm-worklet.js');
+      source = ctx.createMediaStreamSource(stream);
+      node = new AudioWorkletNode(ctx, 'pcm-capture', { processorOptions: { wasm, ...settings() } });
+    } catch (e) { stopCapture(); startBtn.disabled = false; return showError('音频处理初始化失败（浏览器版本过旧？建议 iOS 15+/Chrome 90+）：' + e.message); }
+    mute = ctx.createGain(); mute.gain.value = 0; // 让图保持运行但不外放
     source.connect(node).connect(mute).connect(ctx.destination);
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -32,7 +72,12 @@
     setStatus('连接识别服务…', 'busy');
     tStart = performance.now(); firstResultAt = 0;
 
-    node.port.onmessage = (e) => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data); };
+    node.port.onmessage = (e) => {
+      const d = e.data;
+      if (d instanceof ArrayBuffer) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(d); return; }
+      if (d.type === 'meter') meter(d);
+      else if (d.type === 'init' && optDenoise.checked && !d.rnnoise) metaEl.textContent = `RNNoise 不可用（采样率 ${d.sampleRate}Hz${d.rnnError ? '，' + d.rnnError : ''}），已改用系统降噪`;
+    };
     ws.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
       if (m.type === 'status') {
@@ -54,10 +99,11 @@
   }
 
   function stopCapture() {
-    try { source && source.disconnect(); node && node.disconnect(); } catch {}
+    try { source && source.disconnect(); node && node.disconnect(); mute && mute.disconnect(); } catch {}
     if (stream) stream.getTracks().forEach((t) => t.stop());
     if (ctx) ctx.close().catch(() => {});
-    stream = ctx = node = source = null;
+    stream = ctx = node = source = mute = null;
+    meterBar.style.width = '0'; meterThr.style.display = 'none';
   }
   function stop() {
     stopCapture();

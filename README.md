@@ -8,20 +8,41 @@
   每帧 1280B/40ms                          自动续接（前端感知不到），并转发结果
 ```
 
+## 前端音频处理：降噪 + 只识别主讲人（public/dsp.mjs，在 AudioWorklet 里运行）
+```
+麦克风 48kHz → 高通 100Hz → RNNoise 降噪(WASM, 480 样本/10ms，同时给出语音概率) → 63 阶抗混叠低通 + 重采样 16k
+       → 近讲门限 → 40ms Int16 帧 → /asr
+```
+- **近讲门限（「只识别近处说话人」，默认开）**：用 200ms 的平滑电平，结合 3 个自适应量来判断。
+  - **主讲人参考电平**：从已放行的人声中学习，快升慢降。
+  - **背景人声电平**：开始后先用约 0.8s 校准，之后门限关闭时继续从旁人说话中学习。
+  - **RNNoise 语音概率**。
+  - 打开门限需要同时满足：电平 ≥ 主讲人参考 −5dB、≥ 背景人声 +8dB、≥ 绝对下限 −33dBFS，并且是人声（连续 3 帧里至少 2 帧命中）。打开后，电平 ≥ 参考 −12dB 就维持（迟滞），再加 480ms 拖尾，主讲人的弱音节和词间停顿不会被切掉。
+  - 门限关闭时送静音帧，时间轴不变，讯飞的 eos 照常截断，不占会话也不耗服务量。
+  - 门限打开时，先补发 280ms 预卷，句首不丢字。校准期间的音频也全部留作预卷，用户一开始就说话也不会丢。
+- 近讲模式下关闭浏览器的自动增益（AGC）。AGC 会把远处的小声放大，抹掉远近之间的音量差。开启 RNNoise 时关闭浏览器自带降噪，避免叠加失真。回声消除始终开启。
+- 页面设置（保存在本机，录音中实时生效）：降噪开关、只识别近处说话人开关、灵敏度滑杆（低 = 只收很近的声音，高 = 声音小也收）。音量条变绿表示正在收音，红线是当前的门限。
+- 参数来自合成的多人场景离线扫参：`scripts/offline-pipeline.mjs` 用同一份 dsp.mjs 在 Node 里跑，单元测试见 `test/dsp.test.js`。
+- 局限：主讲人说话的同时，旁人插话的那部分无法分离（单麦克风没有声源分离）；只能靠主讲人更响，让讯飞优先识别主讲人。
+
 ## 会话续接（服务端负责，前端无感）
-- 讯飞要求**单个会话不超过 60s**（超时报错 10114）。服务端在 **55s**（`ROTATE_MS`）时主动结束当前会话，同时开一个新会话。切换期间收到的音频先缓存，新会话建好后一起补发，不会丢字。
+- 讯飞要求**单个会话不超过 60s**（超时报错 10114）。服务端在 45s 之后遇到连续 200ms 静音时，就在这个停顿处续接（软续接，不会把一个字切成两半）；最晚在 **55s**（`ROTATE_MS`）强制续接。切换期间收到的音频先缓存，新会话建好后一起补发，不会丢字。
 - 遇到停顿超过 `eos`（默认 1800ms），引擎会自动结束当前会话。之后再有声音（能量 ≥ `VAD_RMS`）时，服务端会带上前面 400ms 的预缓冲开一个新会话。静音期间不占用会话，也不消耗服务量。
 - 每个会话结束时，把这一段的识别结果作为一条 `final` 发给前端。
-- 已验证：一段 71.6s 的连续音频（中间有一次 3s 停顿）被拆成 3 段，接缝处没有丢字。
+- 已验证：一段 71.6s 的连续音频（中间有一次 3s 停顿）被拆成 3 段，第一段在约 45s 处句间停顿续接，接缝处没有丢字。
 
 ## 目录
 ```
 server/index.js        HTTP 静态托管 + /asr WebSocket 中转（会话续接、能量门限、并发控制）+ /healthz
 server/xfyun.js        签名（官方：host/date/request-line → HMAC-SHA256(APISecret) → Base64）、帧构造、wpgs 结果拼接、错误码
 public/index.html      单页 UI（适配移动端）
-public/app.js          开麦/停止、WebSocket、中间结果和最终结果渲染
-public/pcm-worklet.js  AudioWorklet：任意采样率 → 16k Int16，每帧 640 个采样
+public/app.js          开麦/停止、设置、电平表、WebSocket、中间结果和最终结果渲染
+public/pcm-worklet.js  AudioWorklet（模块）：调用 dsp.mjs，输出 16k Int16，每帧 640 个采样
+public/dsp.mjs         高通 + RNNoise + 重采样 + 近讲门限（浏览器和 Node 共用）
+public/vendor/         rnnoise.wasm（来自 @jitsi/rnnoise-wasm，Apache-2.0；RNNoise 本身为 BSD）
 test/xfyun.test.js     单元测试（npm test；签名用的是官方文档里的示例向量）
+test/dsp.test.js       前端处理链路/门限/预卷/热词/wpgs 拼接测试
+scripts/offline-pipeline.mjs  离线跑前端链路：48k float32 → 16k PCM（可对比旧版 legacy）
 scripts/e2e-client.js  用 PCM 文件模拟实时推流，做端到端自测并统计延迟
 scripts/mock-xfyun.js  本地 mock 讯飞 slm 协议（离线联调用，不消耗服务量）
 samples/               TTS 生成的测试音频（普通话/粤语/东北话/陕西话）
@@ -49,6 +70,8 @@ npm run e2e -- samples/cantonese.pcm ws://localhost:8080/asr     # 设置了 ALL
 | `ROTATE_MS` | | 主动续接的时间点，默认 55000 |
 | `XFYUN_EOS` | | 尾部静音多长时间截断，单位 ms（600~10000），默认 1800。调大能减少会话数（更省服务量），但停顿后最终结果出得更慢 |
 | `VAD_RMS` | | 空闲时开新会话的能量门限，默认 200。环境很安静、说话声音很小时可以调低 |
+| `XFYUN_HOTWORDS` | | 会话热词（文档 `dhw`），用 `|` 或逗号分隔，最长 1024 字节。例如 `屯溪|歙县|黟县|徽州|毛豆腐|臭鳜鱼`。改完要重启/重新部署 |
+| `XFYUN_RES_ID` | | 控制台上传的应用级热词资源 ID（文档 `res_id`），放在首帧 header 里 |
 | `XFYUN_ENDPOINT` | | 只在本地 mock 测试时使用 |
 
 密钥只从 `process.env` 读取，不会下发到前端，不写入文件。日志只打印错误码。
@@ -71,6 +94,9 @@ npm run e2e -- samples/cantonese.pcm ws://localhost:8080/asr     # 设置了 ALL
    }
    ```
    用 pm2 或 systemd 守护进程。大陆地域的服务器要先做 ICP 备案。
+
+## 监控
+`/healthz` 返回 `{ ok, configured, active, upstreamSessions }`。其中 upstreamSessions 是自启动以来开过的讯飞会话数，也就是消耗的调用次数。
 
 ## 识别结果协议（浏览器 ← 服务端）
 `{type:'status', status:'ready'|'done'}`、`{type:'partial', text, seg}`、`{type:'final', text, seg}`、`{type:'error', code, message}`。浏览器发送二进制 PCM 帧，结束时发 `{type:'stop'}`。

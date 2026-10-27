@@ -13,7 +13,8 @@ const MAX_SESSION_SEC = Number(process.env.MAX_SESSION_SEC || 600);   // 单次�
 const MAX_SESSIONS = Number(process.env.MAX_SESSIONS || 2);           // 同时在用的路数（≤讯飞套餐并发）
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const FRAME_BYTES = xf.FRAME_BYTES; // 每 40ms 1280 字节（16k/16bit/单声道）
-const ROTATE_MS = Number(process.env.ROTATE_MS || 55000); // 讯飞单会话上限 60s，提前续接
+const ROTATE_MS = Number(process.env.ROTATE_MS || 55000); // 讯飞单会话上限 60s，最晚此时续接
+const SOFT_ROTATE_MS = ROTATE_MS - 10000;                  // 此后遇到静音帧就提前续接，避免把一个字切成两半
 const VAD_RMS = Number(process.env.VAD_RMS || 200);       // 空闲时的能量门限：有声才开新会话，省服务量
 const PRE_FRAMES = 10;                                    // 开会话前保留 400ms 预缓冲，避免吞首字
 
@@ -24,13 +25,13 @@ function credentials() {
 
 // ---------- 静态文件 ----------
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, configured: !!credentials(), active: active }));
+    return res.end(JSON.stringify({ ok: true, configured: !!credentials(), active, upstreamSessions }));
   }
   let p = decodeURIComponent(url.pathname);
   if (p === '/') p = '/index.html';
@@ -44,7 +45,7 @@ const server = http.createServer((req, res) => {
 });
 
 // ---------- WebSocket 中转 ----------
-let active = 0;
+let active = 0, upstreamSessions = 0; // upstreamSessions：自启动以来开过的讯飞会话数（= 消耗的调用次数）
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
 
 server.on('upgrade', (req, socket, head) => {
@@ -82,7 +83,13 @@ function handleClient(client) {
   function onFrame(frame) {
     if (closed) return;
     if (cur && cur.state === 'connecting') return void cur.queue.push(frame);
-    if (cur && cur.state === 'open') { sendAudio(cur, frame); if (cur.frames * 40 >= ROTATE_MS) endSession(cur); return; }
+    if (cur && cur.state === 'open') {
+      sendAudio(cur, frame);
+      const ms = cur.frames * 40;
+      cur.quiet = rms(frame) < VAD_RMS / 2 ? cur.quiet + 1 : 0;
+      if (ms >= ROTATE_MS || (ms >= SOFT_ROTATE_MS && cur.quiet >= 5)) endSession(cur); // 软续接：连续 200ms 静音
+      return;
+    }
     if (cur) return void carry.push(frame); // closing
     if (stopping) return;
     pre.push(frame); if (pre.length > PRE_FRAMES) pre.shift();
@@ -95,8 +102,9 @@ function handleClient(client) {
   }
 
   function openSession(queue) {
+    upstreamSessions++;
     const s = { ws: new WebSocket(xf.buildAuthUrl(cred), { handshakeTimeout: 10000 }), state: 'connecting', frames: 0, seq: 0,
-      asm: new xf.PgsAssembler(), text: '', queue, index: segIndex++, killTimer: null };
+      asm: new xf.PgsAssembler(), text: '', queue, quiet: 0, index: segIndex++, killTimer: null };
     cur = s;
     s.ws.on('open', () => {
       if (cur !== s) return;

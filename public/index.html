@@ -22,9 +22,19 @@
   #error { color: var(--red); font-size:14px; margin:10px 2px; min-height:1em; }
   #meta { color:#86909c; font-size:12px; margin:4px 2px; }
   footer { position:fixed; left:0; right:0; bottom:0; padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); background:#fff; border-top:1px solid #e5e6eb; display:flex; gap:12px; justify-content:center; }
-  button { font-size:17px; border:0; border-radius:999px; padding:12px 28px; min-width:130px; }
+  button { font-size:17px; border:0; border-radius:999px; padding:12px 0; flex:1; max-width:160px; }
   #start { background:var(--pri); color:#fff; } #stop { background:var(--red); color:#fff; } #clear { background:#e5e6eb; color:#1d2129; }
   button:disabled { opacity:.4; }
+  #settings { background:#fff; border-radius:12px; padding:10px 16px; margin-bottom:12px; font-size:14px; color:#4e5969; }
+  #settings label { display:flex; align-items:center; gap:8px; margin:6px 0; }
+  #settings input[type=checkbox] { width:18px; height:18px; }
+  #sens { flex:1; }
+  .hint { font-size:12px; color:#86909c; }
+  #meterWrap { position:relative; height:10px; background:#e5e6eb; border-radius:5px; overflow:hidden; margin:8px 0 2px; }
+  #meterBar { position:absolute; left:0; top:0; bottom:0; width:0; background:#c9cdd4; transition:width .1s; }
+  #meterBar.on { background:#00b42a; }
+  #meterThr { position:absolute; top:0; bottom:0; width:2px; background:#f53f3f; display:none; }
+  #gateText { font-size:12px; color:#86909c; }
 </style>
 </head>
 <body>
@@ -33,7 +43,15 @@
   <div id="status"><span id="dot"></span><span id="statusText">未连接</span></div>
 </header>
 <main>
-  <div id="transcript"><span class="placeholder" id="ph">点击「开始」并允许麦克风，普通话或方言（粤语、四川话、上海话、闽南语等）均可，自动识别。</span><span id="finals" class="final"></span><span id="partial"></span></div>
+  <div id="settings">
+    <label><input type="checkbox" id="optDenoise" checked />降噪（RNNoise，过滤环境噪音）</label>
+    <label><input type="checkbox" id="optNear" checked />只识别近处说话人（手机拿在嘴边说话的人；周围人声自动忽略）</label>
+    <label>灵敏度 <input type="range" id="sens" min="0" max="100" step="5" value="50" /> <span id="sensVal">50</span></label>
+    <div class="hint">灵敏度低：只收离麦克风很近的声音（周围人多时用）；灵敏度高：声音小也收（安静环境/说话轻时用）。</div>
+    <div id="meterWrap"><div id="meterBar"></div><div id="meterThr"></div></div>
+    <div id="gateText">开始后显示：音量条变绿 = 正在收音；红线 = 收音门限</div>
+  </div>
+  <div id="transcript"><span class="placeholder" id="ph">点击「开始」并允许麦克风，开始后约 1 秒校准环境，然后把手机拿近说话。普通话或方言（粤语、四川话、上海话、闽南语、徽语等）均可，自动识别。</span><span id="finals" class="final"></span><span id="partial"></span></div>
   <div id="error"></div>
   <div id="meta"></div>
 </main>

@@ -30,14 +30,24 @@ function iatParams() {
     language: 'zh_cn', accent: 'mulacc', domain: 'slm',
     eos: Number(process.env.XFYUN_EOS || 1800), // 尾静音截断(ms)，600~10000；到点引擎结束本次会话
     dwa: 'wpgs', ptt: 1, nunum: 1,
+    ...(hotwords() ? { dhw: hotwords() } : {}),
     result: { encoding: 'utf8', compress: 'raw', format: 'json' },
   };
+}
+
+// 会话热词（文档 dhw，≤1024 字节）：XFYUN_HOTWORDS="屯溪|歙县|毛豆腐" → "utf-8;屯溪|歙县|毛豆腐"
+function hotwords() {
+  const w = (process.env.XFYUN_HOTWORDS || '').split(/[|,，\n]/).map((x) => x.trim()).filter(Boolean);
+  if (!w.length) return '';
+  let out = 'utf-8;';
+  for (const x of w) { const next = out + (out.endsWith(';') ? '' : '|') + x; if (Buffer.byteLength(next) > 1024) break; out = next; }
+  return out;
 }
 
 // status: 0 首帧（带 parameter）/ 1 中间帧 / 2 尾帧
 function audioFrame(appId, status, pcm, seq) {
   const msg = {
-    header: { app_id: appId, status },
+    header: { app_id: appId, status, ...(status === 0 && process.env.XFYUN_RES_ID ? { res_id: process.env.XFYUN_RES_ID } : {}) }, // res_id：控制台应用级热词
     payload: { audio: { encoding: 'raw', sample_rate: 16000, channels: 1, bit_depth: 16, status, seq, audio: pcm ? pcm.toString('base64') : '' } },
   };
   if (status === 0) msg.parameter = { iat: iatParams() };
@@ -80,4 +90,4 @@ const ERROR_HINTS = {
   11200: '功能未授权：确认该 APPID 已添加「方言识别大模型」且服务量/有效期未用尽', 11201: '每日交互次数超限',
 };
 
-module.exports = { ENDPOINT, FRAME_BYTES, MAX_SESSION_MS, signature, authorization, buildAuthUrl, iatParams, audioFrame, PgsAssembler, parseMessage, ERROR_HINTS };
+module.exports = { hotwords, ENDPOINT, FRAME_BYTES, MAX_SESSION_MS, signature, authorization, buildAuthUrl, iatParams, audioFrame, PgsAssembler, parseMessage, ERROR_HINTS };
