@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocket, WebSocketServer } = require('ws');
 const xf = require('./xfyun');
+const llm = require('./llm');
 
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -34,8 +35,9 @@ const server = http.createServer((req, res) => {
   const url = parseUrl(req.url);
   if (url.pathname === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, configured: !!credentials(), active, upstreamSessions }));
+    return res.end(JSON.stringify({ ok: true, configured: !!credentials(), active, upstreamSessions, llm: llm.status() }));
   }
+  if (url.pathname === '/api/polish') return handlePolish(req, res);
   let p; try { p = decodeURIComponent(url.pathname); } catch { res.writeHead(400); return res.end(); }
   if (p === '/') p = '/index.html';
   const file = path.normalize(path.join(PUBLIC_DIR, p));
@@ -46,6 +48,38 @@ const server = http.createServer((req, res) => {
     res.end(buf);
   });
 });
+
+// ---------- 润色 API（LLM）----------
+// 只接受已确认的句子 + 前端从本地知识库检索出的少量片段/术语；提示词在服务端拼，前端无法自定义
+const rate = new Map(); // ip → {n, t}
+function allowRate(ip) {
+  const now = Date.now(), r = rate.get(ip) || { n: 0, t: now };
+  if (now - r.t > 60000) { r.n = 0; r.t = now; }
+  r.n++; rate.set(ip, r); if (rate.size > 5000) rate.clear();
+  return r.n <= Number(process.env.POLISH_RATE_PER_MIN || 40);
+}
+const clip = (v, n) => String(v == null ? '' : v).slice(0, n);
+function handlePolish(req, res) {
+  const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  if (req.method !== 'POST') return json(405, { error: 'POST only' });
+  if (ALLOWED_ORIGINS.length && !ALLOWED_ORIGINS.includes(req.headers.origin)) return json(403, { error: 'origin' });
+  const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (!allowRate(ip)) return json(429, { fallback: true, reason: '请求过于频繁' });
+  let body = '', size = 0;
+  req.on('data', (d) => { size += d.length; if (size > 32768) { json(413, { error: 'too large' }); req.destroy(); } else body += d; });
+  req.on('end', async () => {
+    if (res.writableEnded) return;
+    let b; try { b = JSON.parse(body); } catch { return json(400, { error: 'bad json' }); }
+    const items = (Array.isArray(b.items) ? b.items : []).slice(0, 8).map((x) => ({ id: clip(x.id, 20), text: clip(x.text, 300) })).filter((x) => x.text);
+    if (!items.length) return json(400, { error: 'no items' });
+    const ctx = {
+      terms: (Array.isArray(b.terms) ? b.terms : []).slice(0, 60).map((t) => clip(t, 20)).filter(Boolean),
+      refs: (Array.isArray(b.refs) ? b.refs : []).slice(0, 3).map((t) => clip(t, 400)).filter(Boolean),
+      before: clip(b.before, 200), emoji: !!b.emoji, para: !!b.para,
+    };
+    try { json(200, await llm.polish(items, ctx)); } catch (e) { json(200, { fallback: true, reason: 'error' }); }
+  });
+}
 
 // 兜底：单个请求/连接的异常只记日志，不让进程退出（Render 上进程崩溃会整站 502）
 process.on('uncaughtException', (e) => console.error('[uncaught]', e && e.message));
@@ -84,6 +118,7 @@ function handleClient(client) {
   let carry = [];                // 当前会话收尾期间到达的音频
   let pre = [];                  // 空闲时的预缓冲
   let stopping = false, closed = false, segIndex = 0;
+  let dhw = xf.hotwords(); // 会话热词：环境变量 + 前端知识库术语（{type:'hot'}）
   const timer = setTimeout(() => { send(client, { type: 'info', message: `已达单次最长时长 ${MAX_SESSION_SEC}s，自动结束` }); stop(); }, MAX_SESSION_SEC * 1000);
 
   function onFrame(frame) {
@@ -103,7 +138,7 @@ function handleClient(client) {
   }
 
   function sendAudio(s, buf) {
-    s.ws.send(xf.audioFrame(cred.appId, s.frames === 0 ? 0 : 1, buf, s.seq++));
+    s.ws.send(xf.audioFrame(cred.appId, s.frames === 0 ? 0 : 1, buf, s.seq++, { dhw }));
     s.frames += buf.length / FRAME_BYTES;
   }
 
@@ -182,6 +217,7 @@ function handleClient(client) {
     } else {
       let msg; try { msg = JSON.parse(data.toString()); } catch { return; }
       if (msg.type === 'stop') stop();
+      if (msg.type === 'hot' && Array.isArray(msg.words)) dhw = xf.hotwords(msg.words.slice(0, 200).map((w) => String(w).slice(0, 20))); // 下一个讯飞会话起生效
     }
   });
   client.on('close', () => cleanup());

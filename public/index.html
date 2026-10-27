@@ -35,6 +35,22 @@
   #meterBar.on { background:#00b42a; }
   #meterThr { position:absolute; top:0; bottom:0; width:2px; background:#f53f3f; display:none; }
   #gateText { font-size:12px; color:#86909c; }
+  details { background:#fff; border-radius:12px; padding:8px 16px; margin-bottom:12px; font-size:14px; color:#4e5969; }
+  summary { cursor:pointer; font-weight:500; padding:4px 0; }
+  .row { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; margin:6px 0; }
+  .row label { display:flex; align-items:center; gap:5px; margin:0; }
+  #kb { width:100%; min-height:120px; font-size:14px; border:1px solid #e5e6eb; border-radius:8px; padding:8px; box-sizing:border-box; }
+  #kbInfo { font-size:12px; color:#86909c; margin-top:4px; }
+  #toolbar { display:flex; gap:8px; align-items:center; margin:0 0 8px; flex-wrap:wrap; font-size:13px; }
+  .seg { display:inline-flex; border:1px solid #c9cdd4; border-radius:999px; overflow:hidden; }
+  .seg button { font-size:13px; padding:4px 12px; border-radius:0; background:#fff; color:#4e5969; flex:none; max-width:none; }
+  .seg button.on { background:#1677ff; color:#fff; }
+  #copy { font-size:13px; padding:4px 12px; background:#e8f3ff; color:#1677ff; flex:none; max-width:none; }
+  #polishNote { color:#86909c; font-size:12px; }
+  #finals p { margin:0 0 .7em; }
+  .s { transition: background-color 1.2s ease; border-radius:3px; }
+  .s.fresh { background-color:#e8ffea; }
+  .s.pending { text-decoration: underline dotted #c9cdd4; text-underline-offset:4px; }
 </style>
 </head>
 <body>
@@ -43,15 +59,24 @@
   <div id="status"><span id="dot"></span><span id="statusText">未连接</span></div>
 </header>
 <main>
-  <div id="settings">
+  <details id="setBox"><summary>设置（降噪 / 近讲 / 分段 / 表情 / 润色）</summary>
     <label><input type="checkbox" id="optDenoise" checked />降噪（RNNoise，过滤环境噪音）</label>
     <label><input type="checkbox" id="optNear" checked />只识别近处说话人（手机拿在嘴边说话的人；周围人声自动忽略）</label>
     <label>灵敏度 <input type="range" id="sens" min="0" max="100" step="5" value="50" /> <span id="sensVal">50</span></label>
     <div class="hint">灵敏度低：只收离麦克风很近的声音（周围人多时用）；灵敏度高：声音小也收（安静环境/说话轻时用）。</div>
-    <div id="meterWrap"><div id="meterBar"></div><div id="meterThr"></div></div>
+    <div class="row"><label><input type="checkbox" id="optPara" checked />自动分段</label><label><input type="checkbox" id="optEmoji" checked />自动表情</label><label><input type="checkbox" id="optPolish" checked />知识库润色（AI）</label></div>
+  </details>
+  <details id="kbBox"><summary>知识库 / 术语表（可选，仅保存在本机浏览器）</summary>
+    <textarea id="kb" placeholder="直接粘贴资料或术语，例如：&#10;屯溪老街：黄山市屯溪区的历史街区&#10;歙县、黟县、徽州、毛豆腐、臭鳜鱼&#10;吞溪→屯溪（左边是常见错写，右边是正确写法）&#10;&#10;也可以粘贴整段介绍文字，润色时会检索相关片段。"></textarea>
+    <div class="row"><button id="kbSave" style="font-size:13px;padding:5px 14px;background:#1677ff;color:#fff;flex:none;max-width:none">保存</button><span id="kbInfo"></span></div>
+    <div class="hint">术语会作为讯飞「会话热词」提升识别率（下次开始录音生效），并用于纠正同音错字；「错写→正写」立即替换。</div>
+  </details>
+  <div id="settings">
+    <div id="meterWrap" style="margin-top:0"><div id="meterBar"></div><div id="meterThr"></div></div>
     <div id="gateText">开始后显示：音量条变绿 = 正在收音；红线 = 收音门限</div>
   </div>
-  <div id="transcript"><span class="placeholder" id="ph">点击「开始」并允许麦克风，开始后约 1 秒校准环境，然后把手机拿近说话。普通话或方言（粤语、四川话、上海话、闽南语、徽语等）均可，自动识别。</span><span id="finals" class="final"></span><span id="partial"></span></div>
+  <div id="toolbar"><span class="seg"><button id="viewRaw">原文</button><button id="viewPol" class="on">润色版</button></span><button id="copy">复制全文</button><span id="polishNote"></span></div>
+  <div id="transcript"><span class="placeholder" id="ph">点击「开始」并允许麦克风，开始后约 1 秒校准环境，然后把手机拿近说话。普通话或方言（粤语、四川话、上海话、闽南语、徽语等）均可，自动识别。</span><div id="finals" class="final"></div></div>
   <div id="error"></div>
   <div id="meta"></div>
 </main>
@@ -60,6 +85,6 @@
   <button id="stop" disabled>停止</button>
   <button id="clear">清空</button>
 </footer>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
