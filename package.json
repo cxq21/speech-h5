@@ -1,0 +1,16 @@
+{
+  "name": "speech-h5",
+  "version": "0.1.0",
+  "private": true,
+  "description": "H5 实时语音转文字（讯飞方言识别大模型，202 种方言免切换）",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test test/",
+    "e2e": "node scripts/e2e-client.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

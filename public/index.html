@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover" />
+<title>实时语音转文字</title>
+<link rel="icon" href="data:," />
+<style>
+  :root { --bg:#f6f7f9; --fg:#1d2129; --muted:#9aa0a6; --pri:#1677ff; --red:#f5222d; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding: 14px 16px; background:#fff; border-bottom:1px solid #e5e6eb; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; }
+  h1 { font-size:17px; margin:0; }
+  #status { font-size:13px; display:flex; align-items:center; gap:6px; color:#4e5969; }
+  #dot { width:9px; height:9px; border-radius:50%; background:var(--muted); }
+  #dot.ready { background:#00b42a; } #dot.busy { background:#ff7d00; } #dot.err { background:var(--red); }
+  main { padding: 16px 16px 120px; max-width: 760px; margin: 0 auto; }
+  #transcript { background:#fff; border-radius:12px; padding:14px 16px; min-height:45vh; white-space:pre-wrap; word-break:break-word; font-size:18px; }
+  .final { color: var(--fg); }
+  #partial { color: var(--muted); }
+  .placeholder { color: var(--muted); font-size:15px; }
+  #error { color: var(--red); font-size:14px; margin:10px 2px; min-height:1em; }
+  #meta { color:#86909c; font-size:12px; margin:4px 2px; }
+  footer { position:fixed; left:0; right:0; bottom:0; padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); background:#fff; border-top:1px solid #e5e6eb; display:flex; gap:12px; justify-content:center; }
+  button { font-size:17px; border:0; border-radius:999px; padding:12px 28px; min-width:130px; }
+  #start { background:var(--pri); color:#fff; } #stop { background:var(--red); color:#fff; } #clear { background:#e5e6eb; color:#1d2129; }
+  button:disabled { opacity:.4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>实时语音转文字</h1>
+  <div id="status"><span id="dot"></span><span id="statusText">未连接</span></div>
+</header>
+<main>
+  <div id="transcript"><span class="placeholder" id="ph">点击「开始」并允许麦克风，普通话或方言（粤语、四川话、上海话、闽南语等）均可，自动识别。</span><span id="finals" class="final"></span><span id="partial"></span></div>
+  <div id="error"></div>
+  <div id="meta"></div>
+</main>
+<footer>
+  <button id="start">开始</button>
+  <button id="stop" disabled>停止</button>
+  <button id="clear">清空</button>
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
